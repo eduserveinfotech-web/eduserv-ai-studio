@@ -1,8 +1,10 @@
 import os
 import json
 import tempfile
+import urllib.request
+import urllib.parse
 import edge_tts
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from huggingface_hub import InferenceClient
@@ -18,6 +20,15 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# किसी भी अनपेक्षित एरर पर भी CORS हेडर सुरक्षित रखने के लिए
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    return JSONResponse(
+        status_code=500,
+        content={"detail": str(exc)},
+        headers={"Access-Control-Allow-Origin": "*"},
+    )
 
 HF_TOKEN = os.getenv("HF_TOKEN")
 GEMINI_KEY = os.getenv("GEMINI_API_KEY")
@@ -57,30 +68,33 @@ async def plan_reel(idea: str = Form(...)):
 
 @app.post("/api/image")
 async def make_image(prompt: str = Form(...)):
-    if not HF_TOKEN:
-        raise HTTPException(status_code=500, detail="suga.app पर HF_TOKEN सेव नहीं है!")
-
-    client = InferenceClient(token=HF_TOKEN)
     enhanced = (
         f"{prompt}, 3D Pixar animation style, big expressive cartoon eyes, "
         "clearly visible mouth, front-facing portrait, centered, studio lighting, 8k"
     )
-    models = [
-        "black-forest-labs/FLUX.1-schnell",
-        "stabilityai/stable-diffusion-xl-base-1.0"
-    ]
-    last_err = ""
-    for model_id in models:
+    path = tempfile.mktemp(suffix=".png")
+
+    # पहला प्रयास: Hugging Face Inference API
+    if HF_TOKEN:
         try:
-            img = client.text_to_image(enhanced, model=model_id)
-            path = tempfile.mktemp(suffix=".png")
+            client = InferenceClient(token=HF_TOKEN)
+            img = client.text_to_image(enhanced, model="black-forest-labs/FLUX.1-schnell")
             img.save(path)
             return FileResponse(path, media_type="image/png")
-        except Exception as e:
-            last_err = f"{model_id}: {str(e)}"
-            continue
+        except Exception:
+            pass
 
-    raise HTTPException(status_code=502, detail=f"Image generation failed: {last_err}")
+    # दूसरा पक्का और तेज़ प्रयास: Pollinations Flux Engine (बिना किसी टोकन लिमिट के)
+    try:
+        encoded_prompt = urllib.parse.quote(enhanced)
+        url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=768&height=1024&model=flux&nologo=true"
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            with open(path, "wb") as f:
+                f.write(resp.read())
+        return FileResponse(path, media_type="image/png")
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Image generation failed: {str(e)}")
 
 @app.post("/api/voice")
 async def make_voice(text: str = Form(...), voice_pack: str = Form("Gussail Chacha")):
