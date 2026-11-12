@@ -113,9 +113,14 @@ async def make_video(image: UploadFile = File(...), audio: UploadFile = File(...
     with open(aud_path, "wb") as f:
         f.write(await audio.read())
 
-    spaces_to_try = ["vinthony/SadTalker", "fffiloni/SadTalker"]
+    spaces_to_try = [
+        ("vinthony/SadTalker", "/test"),
+        ("fffiloni/SadTalker", "/test"),
+        ("sadtalker/SadTalker", "/test"),
+        ("TonyAssi/SadTalker", "/test"),
+    ]
     last_error = ""
-    for space_id in spaces_to_try:
+    for space_id, endpoint in spaces_to_try:
         try:
             client = Client(space_id, hf_token=HF_TOKEN)
             result = client.predict(
@@ -124,15 +129,15 @@ async def make_video(image: UploadFile = File(...), audio: UploadFile = File(...
                 preprocess="crop",
                 still_mode=False,
                 use_enhancer=False,
-                api_name="/test"
+                api_name=endpoint
             )
             video_path = result[0] if isinstance(result, (list, tuple)) else result
             return FileResponse(video_path, media_type="video/mp4")
         except Exception as e:
-            last_error = str(e)
+            last_error = f"{space_id}: {str(e)}"
             continue
 
-    raise HTTPException(status_code=503, detail=f"वीडियो सर्वर अभी व्यस्त है: {last_error}")
+    raise HTTPException(status_code=503, detail=f"वीडियो सर्वर अभी व्यस्त है ({last_error})")
 
 if __name__ == "__main__":
     import uvicorn
