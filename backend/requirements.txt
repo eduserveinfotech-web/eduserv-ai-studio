@@ -1,4 +1,6 @@
-gradio>=4.44
+fastapi
+uvicorn
+python-multipart
 edge-tts
 huggingface_hub
 google-genai
