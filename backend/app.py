@@ -1,17 +1,27 @@
 import os
 import json
-import asyncio
 import tempfile
-import gradio as gr
 import edge_tts
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, JSONResponse
 from huggingface_hub import InferenceClient
 from gradio_client import Client, handle_file
 from google import genai
 
+app = FastAPI(title="Eduserv AI Studio - Cloud Engine")
+
+# सभी वेबसाइट्स (Webhost 365 / Suga.app) से कनेक्ट होने की अनुमति
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 HF_TOKEN = os.getenv("HF_TOKEN")
 GEMINI_KEY = os.getenv("GEMINI_API_KEY")
 
-# 6 अलग-अलग इमोशनल वॉयस पैक्स
 CHARACTER_PACKS = {
     "Gussail Chacha":  {"voice": "hi-IN-MadhurNeural", "rate": "+10%", "pitch": "-18Hz"},
     "Chulbuli Dadi":   {"voice": "hi-IN-SwaraNeural",  "rate": "+16%", "pitch": "+24Hz"},
@@ -21,98 +31,81 @@ CHARACTER_PACKS = {
     "Shararti Dost":   {"voice": "hi-IN-MadhurNeural", "rate": "+18%", "pitch": "+16Hz"},
 }
 
-def plan_reel(idea: str):
-    """Gemini AI से वायरल हिंदी डायलॉग और 3D कैरेक्टर प्रॉम्प्ट तैयार करना"""
+@app.get("/")
+def home():
+    return {"status": "online", "message": "Eduserv AI Studio Backend is Live!"}
+
+@app.post("/api/plan")
+async def plan_reel(idea: str = Form(...)):
     if not GEMINI_KEY:
-        return idea, f"{idea}, funny 3D talking character with eyes and mouth", "Comedy"
+        return {"dialogue": idea, "image_prompt": f"{idea}, funny 3D talking character", "emotion": "Comedy"}
     
     client = genai.Client(api_key=GEMINI_KEY)
     prompt = f"""
-    You are a viral Hindi Instagram Reels & YouTube Shorts creator.
-    User Idea: "{idea}"
-    Create a hilarious, expressive short script. Return ONLY valid JSON with these exact 3 keys:
-    1. "dialogue": Punchy, dramatic Hindi dialogue (20 to 35 words) using natural pauses like '...' and exclamation '!' so text-to-speech sounds super expressive.
-    2. "image_prompt": Detailed English prompt for a 3D Pixar-style character (vegetable, snake, animal, or object) with big expressive human-like eyes and clear mouth facing the camera.
-    3. "emotion": Choose one from ["Comedy", "Angry", "Dramatic", "Excited"].
+    You are a viral Hindi Reels creator. User Idea: "{idea}"
+    Return ONLY valid JSON with 3 keys:
+    1. "dialogue": Funny, expressive Hindi dialogue (20-35 words) with pauses '...' and '!'.
+    2. "image_prompt": English prompt for a 3D Pixar-style character (vegetable, snake, animal) with big eyes and clear mouth facing camera.
+    3. "emotion": One of ["Comedy", "Angry", "Dramatic", "Excited"].
     """
     try:
         res = client.models.generate_content(model="gemini-2.5-flash", contents=prompt)
         clean = res.text.replace("```json", "").replace("```", "").strip()
-        data = json.loads(clean)
-        return data["dialogue"], data["image_prompt"], data["emotion"]
+        return JSONResponse(content=json.loads(clean))
     except Exception:
-        return idea, f"{idea}, cute 3D Pixar style character with big eyes and mouth", "Comedy"
+        return {"dialogue": idea, "image_prompt": f"{idea}, cute 3D Pixar character", "emotion": "Comedy"}
 
-def make_image(prompt: str):
-    """FLUX.1-schnell मॉडल से अल्ट्रा-क्लियर 3D कैरेक्टर बनाना"""
+@app.post("/api/image")
+async def make_image(prompt: str = Form(...)):
     client = InferenceClient(token=HF_TOKEN)
     enhanced = (
-        f"{prompt}, 3D Pixar and Dreamworks animation style, big expressive eyes, "
-        "clearly visible expressive mouth, front-facing portrait, centered, vibrant cinematic lighting, 8k"
+        f"{prompt}, 3D Pixar animation style, big expressive cartoon eyes, "
+        "clearly visible mouth, front-facing portrait, centered, studio lighting, 8k"
     )
     img = client.text_to_image(enhanced, model="black-forest-labs/FLUX.1-schnell")
     path = tempfile.mktemp(suffix=".png")
     img.save(path)
-    return path
+    return FileResponse(path, media_type="image/png")
 
-def make_voice(text: str, emotion: str, voice_pack: str):
-    """चुने गए किरदार के अंदाज में इमोशनल हिंदी आवाज बनाना"""
+@app.post("/api/voice")
+async def make_voice(text: str = Form(...), voice_pack: str = Form("Gussail Chacha")):
     pack = CHARACTER_PACKS.get(voice_pack, CHARACTER_PACKS["Gussail Chacha"])
     path = tempfile.mktemp(suffix=".mp3")
-    
-    async def _run():
-        comm = edge_tts.Communicate(
-            text=text,
-            voice=pack["voice"],
-            rate=pack["rate"],
-            pitch=pack["pitch"]
-        )
-        await comm.save(path)
-        
-    asyncio.run(_run())
-    return path
+    comm = edge_tts.Communicate(text=text, voice=pack["voice"], rate=pack["rate"], pitch=pack["pitch"])
+    await comm.save(path)
+    return FileResponse(path, media_type="audio/mpeg")
 
-def make_video(image, audio):
-    """इमेज और ऑडियो को मिलाकर बोलता हुआ लिप-सिंक वीडियो बनाना (Smart Multi-Server Fallback)"""
-    custom_space = os.getenv("VIDEO_SPACE", "").strip()
-    spaces_to_try = [s for s in [custom_space, "vinthony/SadTalker", "fffiloni/SadTalker"] if s]
-    
+@app.post("/api/video")
+async def make_video(image: UploadFile = File(...), audio: UploadFile = File(...)):
+    img_path = tempfile.mktemp(suffix=".png")
+    aud_path = tempfile.mktemp(suffix=".mp3")
+    with open(img_path, "wb") as f:
+        f.write(await image.read())
+    with open(aud_path, "wb") as f:
+        f.write(await audio.read())
+
+    spaces_to_try = ["vinthony/SadTalker", "fffiloni/SadTalker"]
     last_error = ""
     for space_id in spaces_to_try:
         try:
             client = Client(space_id, hf_token=HF_TOKEN)
             result = client.predict(
-                source_image=handle_file(image),
-                driven_audio=handle_file(audio),
+                source_image=handle_file(img_path),
+                driven_audio=handle_file(aud_path),
                 preprocess="crop",
                 still_mode=False,
                 use_enhancer=False,
                 api_name="/test"
             )
-            return result[0] if isinstance(result, (list, tuple)) else result
+            video_path = result[0] if isinstance(result, (list, tuple)) else result
+            return FileResponse(video_path, media_type="video/mp4")
         except Exception as e:
             last_error = str(e)
             continue
-            
-    raise gr.Error(f"सभी वीडियो सर्वर अभी व्यस्त हैं, कृपया 1 मिनट बाद पुनः प्रयास करें। ({last_error})")
 
-with gr.Blocks(title="Kirdar AI Studio Backend") as demo:
-    gr.Markdown("# 🎬 किरदार AI स्टूडियो - Cloud API")
-    
-    idea_in = gr.Textbox(label="Idea")
-    diag_out = gr.Textbox(label="Dialogue")
-    img_p_out = gr.Textbox(label="Image Prompt")
-    emo_out = gr.Textbox(label="Emotion")
-    gr.Button("Plan").click(plan_reel, [idea_in], [diag_out, img_p_out, emo_out], api_name="plan")
+    raise HTTPException(status_code=503, detail=f"वीडियो सर्वर अभी व्यस्त है: {last_error}")
 
-    img_out = gr.Image(type="filepath", label="Image")
-    gr.Button("Image").click(make_image, [img_p_out], [img_out], api_name="image")
-
-    pack_in = gr.Textbox(value="Gussail Chacha", label="Pack")
-    aud_out = gr.Audio(type="filepath", label="Audio")
-    gr.Button("Voice").click(make_voice, [diag_out, emo_out, pack_in], [aud_out], api_name="voice")
-
-    vid_out = gr.Video(label="Video")
-    gr.Button("Video").click(make_video, [img_out, aud_out], [vid_out], api_name="video")
-
-demo.queue(max_size=25).launch()
+if __name__ == "__main__":
+    import uvicorn
+    port = int(os.environ.get("PORT", 8080))
+    uvicorn.run(app, host="0.0.0.0", port=port)
