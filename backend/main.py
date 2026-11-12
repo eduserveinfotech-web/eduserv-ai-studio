@@ -11,10 +11,10 @@ from google import genai
 
 app = FastAPI(title="Eduserv AI Studio - Cloud Engine")
 
-# सभी वेबसाइट्स (Webhost 365 / Suga.app) से कनेक्ट होने की अनुमति
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -33,13 +33,13 @@ CHARACTER_PACKS = {
 
 @app.get("/")
 def home():
-    return {"status": "online", "message": "Eduserv AI Studio Backend is Live!"}
+    return {"status": "online", "hf_token_loaded": bool(HF_TOKEN), "gemini_loaded": bool(GEMINI_KEY)}
 
 @app.post("/api/plan")
 async def plan_reel(idea: str = Form(...)):
     if not GEMINI_KEY:
         return {"dialogue": idea, "image_prompt": f"{idea}, funny 3D talking character", "emotion": "Comedy"}
-    
+
     client = genai.Client(api_key=GEMINI_KEY)
     prompt = f"""
     You are a viral Hindi Reels creator. User Idea: "{idea}"
@@ -57,15 +57,30 @@ async def plan_reel(idea: str = Form(...)):
 
 @app.post("/api/image")
 async def make_image(prompt: str = Form(...)):
+    if not HF_TOKEN:
+        raise HTTPException(status_code=500, detail="suga.app पर HF_TOKEN सेव नहीं है!")
+
     client = InferenceClient(token=HF_TOKEN)
     enhanced = (
         f"{prompt}, 3D Pixar animation style, big expressive cartoon eyes, "
         "clearly visible mouth, front-facing portrait, centered, studio lighting, 8k"
     )
-    img = client.text_to_image(enhanced, model="black-forest-labs/FLUX.1-schnell")
-    path = tempfile.mktemp(suffix=".png")
-    img.save(path)
-    return FileResponse(path, media_type="image/png")
+    models = [
+        "black-forest-labs/FLUX.1-schnell",
+        "stabilityai/stable-diffusion-xl-base-1.0"
+    ]
+    last_err = ""
+    for model_id in models:
+        try:
+            img = client.text_to_image(enhanced, model=model_id)
+            path = tempfile.mktemp(suffix=".png")
+            img.save(path)
+            return FileResponse(path, media_type="image/png")
+        except Exception as e:
+            last_err = f"{model_id}: {str(e)}"
+            continue
+
+    raise HTTPException(status_code=502, detail=f"Image generation failed: {last_err}")
 
 @app.post("/api/voice")
 async def make_voice(text: str = Form(...), voice_pack: str = Form("Gussail Chacha")):
@@ -107,5 +122,5 @@ async def make_video(image: UploadFile = File(...), audio: UploadFile = File(...
 
 if __name__ == "__main__":
     import uvicorn
-    port = int(os.environ.get("PORT", 8080))
+    port = int(os.environ.get("PORT", 8000))
     uvicorn.run(app, host="0.0.0.0", port=port)
